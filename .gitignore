@@ -7,3 +7,6 @@ venv/
 *.zip
 venv/
 __pycache__/
+venv/
+*.zip
+__pycache__/
