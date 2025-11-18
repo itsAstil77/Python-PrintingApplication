@@ -1,0 +1,448 @@
+
+from django.shortcuts import render, redirect
+from django.contrib import messages
+import requests
+import os
+import json
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from PIL import Image, ImageDraw, ImageFont,ImageOps
+from io import BytesIO
+from django.conf import settings
+
+LOGIN = 'http://piqapi.foulath.com.bh/api/Authentication/Login'
+
+def login_view(request):
+    if request.method == 'POST':
+        username = request.POST.get('username')
+        password = request.POST.get('password')
+
+        payload = {
+            "userId": username,
+            "password": password
+        }
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+
+        try:
+            response = requests.post(LOGIN, json=payload, headers=headers, allow_redirects=False)
+            try:
+                data = response.json()
+            except ValueError:
+                data = {}
+
+            print('Response data:', data)
+
+            message = data.get('message', '')
+
+            if response.status_code == 200:
+                if message and 'Otp' in message:
+                    request.session['username'] = username
+                    request.session['password'] = password
+                    messages.success(request, 'OTP sent to your email.')
+                    return redirect('otp')
+                else:
+                    messages.error(request, message or 'Login failed. Please check email and password.')
+            else:
+                messages.error(request, message or 'Invalid username or password.')
+
+        except requests.RequestException as e:
+            print(f"Request Exception: {e}")
+            messages.error(request, 'There was an error connecting to the login API.')
+
+    return render(request, 'app1/login.html')
+
+OTP_API = 'http://piqapi.foulath.com.bh/api/Authentication/TwoFactorAuthentication'
+
+def otp_view(request):
+    if request.method == 'POST':
+        otp = request.POST.get('otp')
+        username = request.session.get('username')
+        password = request.session.get('password')
+
+        payload = {
+            "userId": username,
+            "twoAuthCode": otp
+        }
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+
+        try:
+            response = requests.post(OTP_API, json=payload, headers=headers)
+            if response.status_code != 200:
+                messages.error(request, f"Error: {response.status_code} - Could not contact the OTP API.")
+                return render(request, 'app1/otp.html')
+
+            try:
+                data = response.json()
+            except ValueError:
+                messages.error(request, "Error: Invalid JSON response from OTP verification API.")
+                return render(request, 'app1/otp.html')
+
+            print("OTP response:", data)
+
+            if data.get('isError'):
+                messages.error(request, f"OTP verification failed: {data.get('errorMessage', 'Unknown error')}")
+                return render(request, 'app1/otp.html')
+
+            if data.get('message') and 'Login' in data['message']:
+                messages.success(request, 'OTP verified successfully.')
+                return redirect('emp')
+
+            messages.error(request, 'OTP verification failed. Please try again.')
+
+        except requests.RequestException as e:
+            messages.error(request, f'An error occurred during OTP verification: {str(e)}')
+
+    return render(request, 'app1/otp.html')
+
+RESEND_OTP_API = 'http://piqapi.foulath.com.bh/api/Authentication/ReSendOtpLogin'
+
+def resend_otp_view(request):
+    username = request.session.get('username')
+    if username:
+        payload = {"userId": username}
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'text/plain'
+        }
+
+        try:
+            response = requests.post(RESEND_OTP_API, json=payload, headers=headers)
+            print("API Response Status Code:", response.status_code)
+            print("API Response Body:", response.text)
+
+            data = response.json()
+
+            if data.get("isError") == False and data.get("statusCode") == 0:
+                messages.success(request, data.get("message", "OTP has been resent successfully."))
+            else:
+                error_message = data.get("errorMessage", "Failed to resend OTP.")
+                messages.error(request, f"Failed to resend OTP: {error_message}")
+        except requests.RequestException as e:
+            messages.error(request, f'An error occurred: {str(e)}')
+        except ValueError:
+            messages.error(request, "Failed to process the API response.")
+    else:
+        messages.error(request, 'Session expired or invalid. Please log in again.')
+
+    return redirect('otp')
+
+def employee_info_view(request):
+    email = request.session.get('username', 'Guest')
+    tenant_id = 'CS000067'
+    payload = {
+        "data": {
+            "clientId": "CS000067",
+            "userId": email,
+            "pageNumber": 1,
+            "pageSize": 36,
+            "searchKey": "",
+            "projectId": "",
+            "countryId": "",
+            "areaId": "",
+            "buildingId": "",
+            "floorId": "",
+            "zoneId": "",
+            "roleid": "",
+            "fromDate": "",
+            "toDate": ""
+        }
+    }
+
+    headers = {
+        'Content-Type': 'application/json',
+        'Tenant-ID': tenant_id,
+    }
+
+    full_response = {}
+
+    try:
+        response = requests.post(
+            'http://piqapi.foulath.com.bh/api/administrator/Configuration/Employee/EmployeeSummary',
+            headers=headers,
+            json=payload
+        )
+
+        if response.status_code == 200:
+            full_response = response.json()
+            employee_data = full_response.get('employees', [])
+            print('api response body :', response.text)
+            print("Employee Data:", employee_data)
+        else:
+            print("API Error:", response.status_code, response.text)
+            employee_data = []
+
+    except requests.RequestException as e:
+        print("Request Exception:", e)
+        employee_data = []
+
+    return render(request, 'app1/emp.html', {
+        'employee_data': employee_data,
+        'full_response': full_response,
+        'email': email
+    })
+
+ID_CARD_SAVE_PATH = os.path.join(settings.MEDIA_ROOT, 'generated_id_cards')
+FONT_PATH = os.path.join(settings.BASE_DIR, 'app1', 'static', 'app1', 'fonts','RedHatDisplay-Bold.ttf')
+
+TEMPLATE_PATHS = {
+    'type1': 'http://piqapi.foulath.com.bh/uploads/PrintingCards/BahrainStaffCard.jpg',
+    'type2': 'http://piqapi.foulath.com.bh/uploads/PrintingCards/BahrainContractorCard.jpg',
+    'type3': 'http://piqapi.foulath.com.bh/uploads/PrintingCards/FoulathStaffCard.jpg',
+    'type4': 'http://piqapi.foulath.com.bh/uploads/PrintingCards/FoulathContractorCard.jpg',
+    'type5': 'http://piqapi.foulath.com.bh/uploads/PrintingCards/InfotechStaffCard.jpg',
+    'type6': 'http://piqapi.foulath.com.bh/uploads/PrintingCards/InfotechContractorCard.jpg',
+    'type7': 'http://piqapi.foulath.com.bh/uploads/PrintingCards/SulbStaffCard.jpg',
+    'type8': 'http://piqapi.foulath.com.bh/uploads/PrintingCards/SulbContractorCard.jpg'
+}
+
+os.makedirs(ID_CARD_SAVE_PATH, exist_ok=True)
+
+def fetch_employee_data(employee_id):
+    """ Fetch employee details from API """
+    payload = {
+        "data": {
+            "clientId": "CS000067",
+            "userId": "mohammed.kamal@foulath.com.bh",
+            "searchKey": employee_id
+        }
+    }
+    headers = {'Content-Type': 'application/json', 'Tenant-ID': 'CS000067'}
+
+    try:
+        response = requests.post(
+            'http://piqapi.foulath.com.bh/api/administrator/Configuration/Employee/EmployeeSummary',
+            headers=headers,
+            json=payload
+        )
+        if response.status_code == 200:
+            data = response.json()
+            employee = next((emp for emp in data.get('employees', []) if emp['idNumber'] == employee_id), None)
+            return employee
+    except requests.RequestException as e:
+        print(f"API request failed: {e}")
+    return None
+
+
+@csrf_exempt
+def generate_selected_id_cards(request):
+    try:
+        if request.method != 'POST':
+            return JsonResponse({'message': 'Invalid request method'}, status=405)
+
+        try:
+            data = json.loads(request.body)
+            employee_ids = data.get('employee_ids', [])
+            card_type = data.get('card_type', '')
+        except (json.JSONDecodeError, TypeError):
+            employee_ids = request.POST.getlist('employee_ids[]') or request.POST.getlist('employee_ids')
+            card_type = request.POST.get('card_type', '')
+
+        print("DEBUG: Received employee_ids:", employee_ids)
+        print("DEBUG: Received card_type:", card_type)
+
+        if not employee_ids or not card_type:
+            return JsonResponse({'message': 'Employee IDs and card type are required'}, status=400)
+
+        template_url = TEMPLATE_PATHS.get(card_type)
+        if not template_url:
+            return JsonResponse({'message': f'Invalid card type: {card_type}'}, status=400)
+
+        response = requests.get(template_url)
+        if response.status_code != 200:
+            return JsonResponse({'message': f'Template image could not be fetched from {template_url}. Status: {response.status_code}'}, status=500)
+
+        template_image = Image.open(BytesIO(response.content)).convert("RGB")
+
+        try:
+            font_large = ImageFont.truetype(FONT_PATH, 27)
+            font_medium = ImageFont.truetype(FONT_PATH, 27)
+            font_small = ImageFont.truetype(FONT_PATH, 27)
+
+            FONT_BOLD_PATH = os.path.join(settings.BASE_DIR, 'app1', 'static', 'app1', 'fonts', 'arial.ttf')
+            font_xlarge = ImageFont.truetype(FONT_BOLD_PATH, 81)
+
+        except OSError:
+            print(f"WARNING: Font not found. Using default font.")
+            font_large = font_medium = font_small = font_xlarge = ImageFont.load_default()
+
+        font_map = {
+            "large": font_large,
+            "medium": font_medium,
+            "small": font_small,
+            "xlarge": font_xlarge
+        }
+
+        def capitalize_name(name):
+            """
+            Capitalize only the first letter of each word in a name
+            and make the rest lowercase
+            """
+            if not name or name == "N/A":
+                return name
+            
+            words = name.split()
+            capitalized_words = []
+            
+            for word in words:
+                if word:  
+                    capitalized_word = word[0].upper() + word[1:].lower()
+                    capitalized_words.append(capitalized_word)
+            
+            return ' '.join(capitalized_words)
+
+        def draw_wrapped_text(draw, text, position, font, max_width=None, line_height=30, fill="black"):
+            """
+            Draw text with automatic word wrapping
+            """
+            if not max_width:
+                draw.text(position, text, fill=fill, font=font)
+                return [position[1]]
+            
+            x, y = position
+            lines = []
+            words = text.split()
+            current_line = []
+            
+            for word in words:
+                test_line = ' '.join(current_line + [word])
+                bbox = draw.textbbox((0, 0), test_line, font=font)
+                text_width = bbox[2] - bbox[0]
+                
+                if text_width <= max_width:
+                    current_line.append(word)
+                else:
+                    if current_line:
+                        lines.append(' '.join(current_line))
+                    current_line = [word]
+            
+            if current_line:
+                lines.append(' '.join(current_line))
+            
+            y_positions = []
+            for i, line in enumerate(lines):
+                draw.text((x, y + (i * line_height)), line, fill=fill, font=font)
+                y_positions.append(y + (i * line_height))
+            
+            return y_positions
+
+        LAYOUTS = {
+            "group1": {  
+                "image_size": (237, 317),
+                "image_pos": (729, 186),
+                "fields": [
+                    {"key": "firstname", "pos": (260, 253), "font": "large", "suffix": " {lastname}", "max_width": 450, "line_height": 30, "capitalize": True},
+                    {"key": "designation", "pos": (260, 312), "font": "medium", "max_width": 450, "line_height": 30, "capitalize": True},
+                    {"key": "idNumber", "pos": (260, 367), "font": "small"},
+                    {"key": "nationalId", "pos": (260, 425), "font": "small"},
+                    {"key": "endDate", "pos": (260, 485), "font": "small"},
+                    {"key": "company", "pos": (500, 530), "font": "xlarge", "center": True, "container_width": 1000}
+                ]
+            },
+            "group2": {  
+                "image_size": (237, 317),
+                "image_pos": (729, 186),
+                "fields": [
+                    {"key": "firstname", "pos": (260, 247), "font": "large", "suffix": " {lastname}", "max_width": 450, "line_height": 30, "capitalize": True},
+                    {"key": "designation", "pos": (260, 307), "font": "medium", "max_width": 450, "line_height": 30, "capitalize": True},
+                    {"key": "idNumber", "pos": (260, 367), "font": "small"},
+                    {"key": "nationalId", "pos": (260, 430), "font": "small"},
+                    {"key": "phoneNumber", "pos": (260, 490), "font": "small"},
+                    # {"key": "endDate", "pos": (235, 442), "font": "small"},
+                    {"key": "department", "pos": (500, 530), "font": "xlarge", "center": True, "container_width": 1000} 
+                ]
+            }
+        }
+
+        GROUP_MAPPING = {
+            "type1": "group1", "type3": "group1", "type5": "group1", "type7": "group1",
+            "type2": "group2", "type4": "group2", "type6": "group2", "type8": "group2",
+        }
+
+        generated_files = []
+
+        for employee_id in employee_ids:
+            employee = fetch_employee_data(employee_id)
+            if not employee:
+                print(f"WARNING: Employee data not found for ID: {employee_id}")
+                continue
+
+            id_card = template_image.copy()
+            draw = ImageDraw.Draw(id_card)
+
+            layout_key = GROUP_MAPPING.get(card_type, "group1")
+            layout = LAYOUTS[layout_key]
+
+            employee_image_url = employee.get('employeeImage')
+            if employee_image_url:
+                try:
+                    img_response = requests.get(employee_image_url)
+                    if img_response.status_code == 200:
+                        emp_img = Image.open(BytesIO(img_response.content)).convert('RGB')
+                        emp_img = ImageOps.exif_transpose(emp_img)
+                        emp_img = ImageOps.fit(emp_img, layout["image_size"], method=Image.LANCZOS, centering=(0.5, 0.3))
+                        id_card.paste(emp_img, layout["image_pos"])
+                except Exception as e:
+                    print(f"Error loading employee image for {employee_id}: {e}")
+
+            for field in layout["fields"]:
+                value = employee.get(field["key"], "N/A")
+
+    
+                if field["key"] == "endDate" and value != "N/A":
+                    value = value.split("T")[0]
+
+
+                
+                if field.get("capitalize", False) and value != "N/A":
+                    if field["key"] == "firstname" and "{lastname}" in field.get("suffix", ""):
+                        firstname = capitalize_name(employee.get('firstname', 'N/A'))
+                        lastname = capitalize_name(employee.get('lastname', ''))
+                        value = f"{firstname} {lastname}"
+                    else:
+                        value = capitalize_name(value)
+                
+                elif "{lastname}" in field.get("suffix", ""):
+                    firstname = capitalize_name(employee.get('firstname', 'N/A'))
+                    lastname = capitalize_name(employee.get('lastname', ''))
+                    value = f"{firstname} {lastname}"
+                
+                text = f"{field.get('prefix', '')}{value}{field.get('suffix', '').replace('{lastname}', '')}"
+                font = font_map.get(field["font"], font_small)
+                
+                if field.get("center", False):
+                    bbox = draw.textbbox((0, 0), text, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    
+                    container_width = field.get("container_width", template_image.width)
+                    center_x = (container_width - text_width) // 2
+                    centered_pos = (center_x, field["pos"][1])
+                    
+                    print(f"DEBUG: Centering text '{text}' at x={center_x} (text_width={text_width}, container={container_width})")
+                    
+                    draw.text(centered_pos, text, fill="black", font=font)
+                
+                elif field.get("max_width"):
+                    max_width = field.get("max_width", 450)
+                    line_height = field.get("line_height", 30)
+                    draw_wrapped_text(draw, text, field["pos"], font, max_width, line_height, "black")
+                
+                else:
+                    draw.text(field["pos"], text, fill="black", font=font)
+
+            id_card = id_card.convert("RGB")
+            output_filename = f"{employee['idNumber']}_{card_type}_id_card.png"
+            output_path = os.path.join(ID_CARD_SAVE_PATH, output_filename)
+            id_card.save(output_path, format="PNG", optimize=True, quality=85)
+            generated_files.append(output_filename)
+
+        return JsonResponse({'message': 'ID cards generated successfully!', 'files': generated_files})
+
+    except Exception as e:
+        print(f"Error in generate_selected_id_cards: {str(e)}")
+        return JsonResponse({'message': f'Error generating ID cards: {str(e)}'}, status=500)
