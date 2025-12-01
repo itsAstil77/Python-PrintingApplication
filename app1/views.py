@@ -261,9 +261,9 @@ def generate_selected_id_cards(request):
         template_image = Image.open(BytesIO(response.content)).convert("RGB")
 
         try:
-            font_large = ImageFont.truetype(FONT_PATH, 33)
-            font_medium = ImageFont.truetype(FONT_PATH, 33)
-            font_small = ImageFont.truetype(FONT_PATH, 33)
+            font_large = ImageFont.truetype(FONT_PATH, 34)
+            font_medium = ImageFont.truetype(FONT_PATH, 34)
+            font_small = ImageFont.truetype(FONT_PATH, 34)
 
             FONT_BOLD_PATH = os.path.join(settings.BASE_DIR, 'app1', 'static', 'app1', 'fonts', 'ARIALBD 1.TTF')
             font_xlarge = ImageFont.truetype(FONT_BOLD_PATH, 81)
@@ -334,9 +334,9 @@ def generate_selected_id_cards(request):
                 "image_pos": (729, 186),
                 "fields": [
                     {"key": "firstname", "pos": (260, 253), "font": "large", "suffix": " {lastname}", "max_width": 450, "line_height": 30, "capitalize": True},
-                    {"key": "designation", "pos": (260, 312), "font": "medium", "max_width": 450, "line_height": 30, "capitalize": True},
-                    {"key": "idNumber", "pos": (260, 367), "font": "small"},
-                    {"key": "nationalId", "pos": (260, 425), "font": "small"},
+                    {"key": "designation", "pos": (260, 308), "font": "medium", "max_width": 400, "line_height": 30, "capitalize": True},
+                    {"key": "idNumber", "pos": (260, 363), "font": "small"},
+                    {"key": "nationalId", "pos": (260, 422), "font": "small"},
                     {"key": "endDate", "pos": (260, 485), "font": "small"},
                     {"key": "company", "pos": (500, 530), "font": "xlarge", "center": True, "container_width": 1000}
                 ]
